@@ -1,20 +1,67 @@
 # app.py
+<<<<<<< HEAD
 from flask import Flask, redirect, url_for, session, request, render_template, flash
 import requests, base64, threading, os, time
+=======
+from flask import Flask, redirect, url_for, session, request, render_template, flash, jsonify
+import requests, base64, threading, os, time, webbrowser, secrets
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
 from rich.console import Console
 from run_loop import run_loop
 import config
 from audio_capture import list_audio_devices
+<<<<<<< HEAD
+=======
+import sys
+from urllib.parse import urlencode, quote
+import os
+from dotenv import load_dotenv
+import logging
+from rich.logging import RichHandler
+from datetime import timedelta
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)]
+)
+log = logging.getLogger("rich")
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
 
 console = Console()
 
 app = Flask(__name__)
+<<<<<<< HEAD
 app.secret_key = config.SECRET_TOKEN or os.urandom(24)  # Fallback for secret key
+=======
+
+# Load environment variables
+load_dotenv()
+
+# Configure Flask secret key and session
+if not os.getenv("FLASK_SECRET_KEY"):
+    secret_key = secrets.token_hex(32)
+    with open(".env", "a") as f:
+        f.write(f"\nFLASK_SECRET_KEY={secret_key}")
+    log.info("[+] Flask secret key configured")
+else:
+    log.info("[+] Flask secret key loaded from configuration.")
+
+app.secret_key = os.getenv("FLASK_SECRET_KEY")
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
+app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
 
 # Store the background thread
 automation_thread = None
 should_stop = threading.Event()  # Use an Event for thread communication
 
+<<<<<<< HEAD
 # ─── 1) Home: OAuth or Setup ────────────────────────────────────────────────────
 @app.route("/")
 def index():
@@ -119,6 +166,197 @@ def setup():
         session.pop("token_expiry", None)
         return redirect(url_for("index"))
 
+=======
+# Zoom OAuth configuration
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/oauth/callback")
+AUTH_URL = "https://zoom.us/oauth/authorize"
+TOKEN_URL = "https://zoom.us/oauth/token"
+API_BASE_URL = "https://api.zoom.us/v2"
+
+def clear_oauth_session():
+    """Clear OAuth related session data"""
+    session.pop('oauth_state', None)
+    session.pop('access_token', None)
+    session.pop('refresh_token', None)
+    session.pop('token_expires_at', None)
+
+def is_token_valid():
+    """Check if the current access token is valid"""
+    if 'access_token' not in session:
+        return False
+    
+    # Check if token has expired
+    if 'token_expires_at' in session:
+        if time.time() >= session['token_expires_at']:
+            return False
+    
+    # Verify token with Zoom API
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/users/me",
+            headers={"Authorization": f"Bearer {session['access_token']}"}
+        )
+        return response.status_code == 200
+    except Exception as e:
+        log.error(f"Error verifying token: {str(e)}")
+        return False
+
+def refresh_access_token():
+    """Refresh the access token using refresh token"""
+    if 'refresh_token' not in session:
+        return False
+    
+    try:
+        response = requests.post(
+            TOKEN_URL,
+            auth=(CLIENT_ID, CLIENT_SECRET),
+            data={
+                'grant_type': 'refresh_token',
+                'refresh_token': session['refresh_token']
+            }
+        )
+        response.raise_for_status()
+        
+        token_info = response.json()
+        session['access_token'] = token_info['access_token']
+        session['refresh_token'] = token_info.get('refresh_token')
+        session['token_expires_at'] = time.time() + token_info.get('expires_in', 3600)
+        return True
+    except Exception as e:
+        log.error(f"Error refreshing token: {str(e)}")
+        return False
+
+@app.before_request
+def make_session_permanent():
+    session.permanent = True
+
+@app.route("/")
+def index():
+    if not is_token_valid():
+        if 'refresh_token' in session:
+            if not refresh_access_token():
+                clear_oauth_session()
+                return render_template("index.html", authorized=False)
+        else:
+            return render_template("index.html", authorized=False)
+    
+    return render_template("index.html", authorized=True)
+
+@app.route("/authorize")
+def authorize():
+    try:
+        # Clear any existing OAuth session data
+        clear_oauth_session()
+        
+        # Generate a secure state token
+        state = secrets.token_urlsafe(32)
+        session['oauth_state'] = state
+        
+        # Construct the authorization URL with proper encoding
+        params = {
+            'response_type': 'code',
+            'client_id': CLIENT_ID,
+            'redirect_uri': REDIRECT_URI,
+            'state': state
+        }
+        
+        # Properly encode the parameters
+        auth_url = f"{AUTH_URL}?{urlencode(params)}"
+        log.info(f"Starting OAuth flow with state: {state}")
+        return redirect(auth_url)
+    except Exception as e:
+        log.error(f"Authorization error: {str(e)}")
+        flash("Failed to start authorization process")
+        return redirect(url_for('index'))
+
+@app.route("/oauth/callback")
+def oauth_callback():
+    try:
+        # Check for error in callback
+        if 'error' in request.args:
+            error = request.args.get('error')
+            log.error(f"OAuth error: {error}")
+            flash(f"Authorization failed: {error}")
+            return redirect(url_for('index'))
+
+        # Verify state parameter
+        state = request.args.get('state')
+        stored_state = session.get('oauth_state')
+        
+        if not state or not stored_state:
+            log.error("Missing state parameter")
+            flash("Authorization failed: Missing state parameter")
+            return redirect(url_for('index'))
+            
+        if state != stored_state:
+            log.error(f"State mismatch: received={state}, stored={stored_state}")
+            flash("Authorization failed: Invalid state parameter")
+            return redirect(url_for('index'))
+
+        # Get the authorization code
+        code = request.args.get('code')
+        if not code:
+            log.error("No authorization code received")
+            flash("Authorization failed: No code received")
+            return redirect(url_for('index'))
+
+        # Exchange code for token
+        token_data = {
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': REDIRECT_URI
+        }
+
+        response = requests.post(
+            TOKEN_URL,
+            auth=(CLIENT_ID, CLIENT_SECRET),
+            data=token_data
+        )
+        response.raise_for_status()
+        
+        # Store tokens in session
+        token_info = response.json()
+        session['access_token'] = token_info['access_token']
+        session['refresh_token'] = token_info.get('refresh_token')
+        session['token_expires_at'] = time.time() + token_info.get('expires_in', 3600)
+        
+        # Clear the state after successful token exchange
+        session.pop('oauth_state', None)
+        
+        log.info("Successfully obtained access token")
+        flash("Successfully authorized with Zoom")
+        return redirect(url_for('setup'))
+        
+    except requests.exceptions.RequestException as e:
+        log.error(f"Token exchange failed: {str(e)}")
+        flash("Failed to exchange authorization code for token")
+        return redirect(url_for('index'))
+    except Exception as e:
+        log.error(f"Unexpected error during OAuth callback: {str(e)}")
+        flash("An unexpected error occurred during authorization")
+        return redirect(url_for('index'))
+
+@app.route("/logout")
+def logout():
+    clear_oauth_session()
+    flash("Successfully logged out")
+    return redirect(url_for('index'))
+
+# ─── 4) Setup page ──────────────────────────────────────────────────────────────
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    global automation_thread  # Add global declaration
+    
+    if not is_token_valid():
+        if 'refresh_token' in session:
+            if not refresh_access_token():
+                return redirect(url_for('authorize'))
+        else:
+            return redirect(url_for('authorize'))
+    
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
     if request.method == "POST":
         # read user input
         meeting_id = request.form["meeting_id"]
@@ -132,7 +370,10 @@ def setup():
             return redirect(url_for("setup"))
             
         device = request.form["device"]
+<<<<<<< HEAD
         zoom_token = session["zoom_token"]
+=======
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
 
         console.log(f"🚀 Starting automation: meeting={meeting_id}, dur={duration}s, dev={device}")
         
@@ -173,7 +414,11 @@ def setup():
         # launch background loop
         automation_thread = threading.Thread(
             target=run_loop,
+<<<<<<< HEAD
             args=(zoom_token, meeting_id, duration, device, should_stop),
+=======
+            args=(session["access_token"], meeting_id, duration, device, should_stop),
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
             daemon=True
         )
         automation_thread.start()
@@ -182,13 +427,28 @@ def setup():
     # List available audio devices for the UI
     try:
         devices = list_audio_devices()
+<<<<<<< HEAD
     except Exception as e:
         console.log(f"[yellow]⚠️ Could not list audio devices: {e}[/]")
         devices = []
+=======
+        # Format device names for display
+        formatted_devices = []
+        for device in devices:
+            if isinstance(device, dict):
+                name = device.get('name', 'Unknown Device')
+            else:
+                name = str(device)
+            formatted_devices.append(name)
+    except Exception as e:
+        console.log(f"[yellow]⚠️ Could not list audio devices: {e}[/]")
+        formatted_devices = []
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
     
     # GET
     return render_template(
         "setup.html",
+<<<<<<< HEAD
         token=session["zoom_token"],
         devices=devices
     )
@@ -204,3 +464,52 @@ if __name__ == "__main__":
     console.log("[green]Zoom Poll Automator starting...[/]")
     console.log(f"Access the web interface at: {config.REDIRECT_URI.split('/oauth')[0]}")
     app.run(host="0.0.0.0", port=8000)
+=======
+        token=session["access_token"],
+        devices=formatted_devices
+    )
+
+@app.route("/stop", methods=["POST"])
+def stop():
+    global should_stop
+    should_stop.set()  # Signal the thread to stop
+    flash("Automation has been stopped.")
+    return redirect(url_for("setup"))
+
+@app.route("/health")
+def health_check():
+    """Health check endpoint to verify the app is running"""
+    return {"status": "ok", "message": "Zoom Poll Automator is running"}
+
+@app.route("/meetings")
+def list_meetings():
+    if not is_token_valid():
+        return redirect(url_for('authorize'))
+    
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/users/me/meetings",
+            headers={"Authorization": f"Bearer {session['access_token']}"}
+        )
+        response.raise_for_status()
+        return jsonify(response.json())
+    except requests.exceptions.RequestException as e:
+        log.error(f"Failed to fetch meetings: {str(e)}")
+        return jsonify({"error": "Failed to fetch meetings"}), 500
+
+def open_browser():
+    """Open the browser after a short delay"""
+    time.sleep(1.5)
+    webbrowser.open("http://localhost:8000")
+
+if __name__ == "__main__":
+    console.log("[green]Zoom Poll Automator starting...[/]")
+    server_url = REDIRECT_URI.split('/oauth')[0]
+    console.log(f"Access the web interface at: {server_url}")
+    
+    # Check if we should automatically open the browser
+    if "--no-browser" not in sys.argv:
+        threading.Thread(target=open_browser, daemon=True).start()
+    
+    app.run(host="0.0.0.0", port=8000, debug=False)
+>>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
