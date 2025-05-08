@@ -57,9 +57,9 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 >>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
 
-# Store the background thread
+# Initialize global variables
 automation_thread = None
-should_stop = threading.Event()  # Use an Event for thread communication
+should_stop = threading.Event()
 
 <<<<<<< HEAD
 # ─── 1) Home: OAuth or Setup ────────────────────────────────────────────────────
@@ -174,6 +174,20 @@ REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/oauth/callback")
 AUTH_URL = "https://zoom.us/oauth/authorize"
 TOKEN_URL = "https://zoom.us/oauth/token"
 API_BASE_URL = "https://api.zoom.us/v2"
+
+def get_device_by_name(device_name):
+    """Get the full device object by name"""
+    try:
+        devices = list_audio_devices()
+        for device in devices:
+            if isinstance(device, dict) and device.get('name') == device_name:
+                return device
+            elif str(device) == device_name:
+                return device
+        return None
+    except Exception as e:
+        log.error(f"Error getting device by name: {str(e)}")
+        return None
 
 def clear_oauth_session():
     """Clear OAuth related session data"""
@@ -344,10 +358,9 @@ def logout():
     flash("Successfully logged out")
     return redirect(url_for('index'))
 
-# ─── 4) Setup page ──────────────────────────────────────────────────────────────
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
-    global automation_thread  # Add global declaration
+    global automation_thread
     
     if not is_token_valid():
         if 'refresh_token' in session:
@@ -358,58 +371,92 @@ def setup():
     
 >>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
     if request.method == "POST":
-        # read user input
-        meeting_id = request.form["meeting_id"]
         try:
-            duration = int(request.form["duration"])
-            if duration < 10 or duration > 300:
-                flash("Duration must be between 10 and 300 seconds")
+            # Validate meeting ID
+            meeting_id = request.form.get("meeting_id", "").strip()
+            if not meeting_id:
+                flash("Meeting ID is required")
                 return redirect(url_for("setup"))
-        except ValueError:
-            flash("Duration must be a valid number")
-            return redirect(url_for("setup"))
             
+<<<<<<< HEAD
         device = request.form["device"]
 <<<<<<< HEAD
         zoom_token = session["zoom_token"]
 =======
 >>>>>>> bcc4988 (Initial commit of Zoom Poll Automator project, including core functionality for audio capture, transcription, poll generation, and integration with Zoom API. Added CLI interface, web interface, and setup scripts. Configured logging and environment management. Included necessary dependencies and documentation.)
+=======
+            # Validate duration
+            try:
+                duration = int(request.form.get("duration", "60"))
+                if duration < 10 or duration > 300:
+                    flash("Duration must be between 10 and 300 seconds")
+                    return redirect(url_for("setup"))
+            except ValueError:
+                flash("Duration must be a valid number")
+                return redirect(url_for("setup"))
+            
+            # Get and validate device
+            device_name = request.form.get("device", "").strip()
+            if not device_name:
+                flash("Audio device is required")
+                return redirect(url_for("setup"))
+            
+            device = get_device_by_name(device_name)
+            if not device:
+                flash(f"Selected audio device '{device_name}' not found")
+                return redirect(url_for("setup"))
+>>>>>>> 4fcc7f5 (Enhance setup functionality by adding device validation and error handling. Introduce a new function to retrieve audio devices by name. Refactor meeting ID and duration validation logic for improved user feedback. Maintain existing thread management for automation tasks.)
 
-        console.log(f"🚀 Starting automation: meeting={meeting_id}, dur={duration}s, dev={device}")
-        
-        # Stop existing thread if running
-        if automation_thread and automation_thread.is_alive():
-            console.log("[yellow]⚠️ Stopping existing automation thread[/]")
-            should_stop.set()  # Signal the thread to stop
-            # Give time for thread to clean up
-            time.sleep(2)
-            should_stop.clear()  # Reset the flag for next thread
-        
-        # Test Ollama connection before starting thread
-        try:
-            # Direct API test to Ollama
-            ollama_url = f"{config.OLLAMA_API}/api/tags"
-            console.log(f"Testing Ollama connection: {ollama_url}")
-            r = requests.get(ollama_url, timeout=5)
-            if not r.ok:
-                error_msg = f"Failed to connect to Ollama API: {r.status_code} {r.text}"
+            console.log(f"🚀 Starting automation: meeting={meeting_id}, dur={duration}s, dev={device_name}")
+            
+            # Stop existing thread if running
+            if automation_thread and automation_thread.is_alive():
+                console.log("[yellow]⚠️ Stopping existing automation thread[/]")
+                should_stop.set()  # Signal the thread to stop
+                # Give time for thread to clean up
+                time.sleep(2)
+                should_stop.clear()  # Reset the flag for next thread
+            
+            # Test Ollama connection before starting thread
+            try:
+                # Direct API test to Ollama
+                ollama_url = f"{config.OLLAMA_API}/api/tags"
+                console.log(f"Testing Ollama connection: {ollama_url}")
+                r = requests.get(ollama_url, timeout=5)
+                if not r.ok:
+                    error_msg = f"Failed to connect to Ollama API: {r.status_code} {r.text}"
+                    console.log(f"[red]❌ {error_msg}[/]")
+                    flash(error_msg)
+                    return redirect(url_for("setup"))
+                    
+                # Verify llama3.2 model is available
+                models = r.json().get("models", [])
+                llama_available = any("llama3.2" in model.get("name", "") for model in models)
+                if not llama_available:
+                    console.log("[yellow]⚠️ llama3.2 model not found, you may need to pull it[/]")
+                    flash("Warning: llama3.2 model not found in Ollama. Run 'ollama pull llama3.2' first.")
+                else:
+                    console.log("[green]✅ Successfully connected to Ollama and found llama3.2 model[/]")
+            except Exception as e:
+                error_msg = f"Failed to connect to Ollama at {config.OLLAMA_API}: {str(e)}"
                 console.log(f"[red]❌ {error_msg}[/]")
                 flash(error_msg)
                 return redirect(url_for("setup"))
-                
-            # Verify llama3.2 model is available
-            models = r.json().get("models", [])
-            llama_available = any("llama3.2" in model.get("name", "") for model in models)
-            if not llama_available:
-                console.log("[yellow]⚠️ llama3.2 model not found, you may need to pull it[/]")
-                flash("Warning: llama3.2 model not found in Ollama. Run 'ollama pull llama3.2' first.")
-            else:
-                console.log("[green]✅ Successfully connected to Ollama and found llama3.2 model[/]")
+            
+            # launch background loop
+            automation_thread = threading.Thread(
+                target=run_loop,
+                args=(session["access_token"], meeting_id, duration, device, should_stop),
+                daemon=True
+            )
+            automation_thread.start()
+            return render_template("started.html")
+            
         except Exception as e:
-            error_msg = f"Failed to connect to Ollama at {config.OLLAMA_API}: {str(e)}"
-            console.log(f"[red]❌ {error_msg}[/]")
-            flash(error_msg)
+            log.error(f"Error starting automation: {str(e)}")
+            flash(f"Failed to start automation: {str(e)}")
             return redirect(url_for("setup"))
+<<<<<<< HEAD
         
         # launch background loop
         automation_thread = threading.Thread(
@@ -423,6 +470,8 @@ def setup():
         )
         automation_thread.start()
         return render_template("started.html")
+=======
+>>>>>>> 4fcc7f5 (Enhance setup functionality by adding device validation and error handling. Introduce a new function to retrieve audio devices by name. Refactor meeting ID and duration validation logic for improved user feedback. Maintain existing thread management for automation tasks.)
 
     # List available audio devices for the UI
     try:
